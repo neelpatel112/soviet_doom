@@ -1,4 +1,4 @@
-# DUNSHIRE DOOM
+# SOVIET DOOM
 
 A (mostly complete) rewrite of DOOM for the browser. The project started by trying to render DOOM in isometric projection ([kinda like this](https://www.doomworld.com/forum/topic/126329-top-down-isometric-view-from-a-wad-file/)) but quickly snowballed. Dunshire is a nod to Parks and Recreation's [Cones of Dunshire](https://parksandrecreation.fandom.com/wiki/The_Cones_of_Dunshire) because Ben Wyatt, between jobs, feels relatable.
 
@@ -25,52 +25,13 @@ npm run dev
 ```
 Open your web browser to http://localhost:5173 and the page should explain the rest.
 
-## Roadmap
-
-Nonexhaustive list of bugs and missing/incomplete features:
-
-* ~~Render performance~~
-* Screen wipe
-* ~~Victory screens~~
-* ~~Automatic weapon switching on low ammo~~
-* ~~Shooting angle randomness isn't right (also Revenant rockets)~~
-* ~~Sounds for crushers and moving floors (door sounds work!)~~
-* ~~Crackling/popping sounds~~
-* ~~Sound playback, in general, doesn't feel quite right (sounds are too soft or interrupted too often)~~
-* Holes in floor/ceiling geometry in some maps (eg. Doom2 MAP25~~, Plutonia MAP25 and MAP29~~)
-* ~~Load/Save games~~
-* ~~Lighting effects (like [fake contrast](https://doomwiki.org/wiki/Fake_contrast) and [light diminishing](https://doomwiki.org/wiki/Light_diminishing))~~
-* Palette controlled lighting
-* Automap
-* AI performance on large maps
-* ~~Fullscreen mode~~
-
-Nice to haves:
-
-* ~~Mobile (touch) controls~~
-* Multiplayer (P2P over webrtc?)
-* Play demos
-* Nightmare monster respawn (and other nightmare monster behaviours)
-* More HUD options
-* Spin off src/doom into it's own project to make it easier to re-use (or rewrite)
-* ~~Improve the intro and menu UI. I don't have a design in mind, I just don't love what's there. It would be really fun to build something DOOM themed.~~
-* Cleanup FIXMEs and TODOs
-
-Long term maybe worth exploring ideas:
-
-* Re-write src/doom in Zig and compile to WASM (for fun?)
-* Support other DOOM engine games (Heretic, Hexen, Strife)
-* ~~More Boom compatibility like switches, platforms, lights, etc. At least enough to play the community chest maps, ancient aliens, or sunlust.~~
-* Generate BSP, SEGS, and SSECTOR nodes for large maps that don't have them
-* Build a few maps that work in orthographic projection and package as an actual game
-
 ## Authors
 
 * Lloyd Markle
 * You?
 
 ### Contributing
-I'm happy to take contributions (features or bug fixes) so feel free to reach out in an issue or pull request. I'm sure there is lots of room to improve. I may not be super quick to respond, I've got kids to raise, but my initial goal is to respond to anything that comes in.
+I'm happy to take contributions (features or bug fixes) so feel free to reach out in an issue or pull request. I'm sure there is lots of room to improve. I may not be super quick to respond, I've got ma damn phone, but my initial goal is to respond to anything that comes in.
 
 I have learned _SOOOOO MUCH_ while building this but that is another story. Suffice to say I am in awe of the creativity of a thousands subtle decisions that go into making a game fun and performant. Hopefully you find the source approachable or feel inspired to improve it or build your own little project.
 
