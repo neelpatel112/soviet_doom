@@ -1,0 +1,164 @@
+<script lang="ts">
+    import { T, useThrelte } from '@threlte/core';
+    import { BufferGeometry, MeshBasicMaterial } from 'three';
+    import { useAppContext } from '../DoomContext';
+    import { MapTextureAtlas, TextureAtlas } from './TextureAtlas'
+    import { buildMapGeometry } from './GeometryBuilder';
+    import Wireframe from '../Debug/Wireframe.svelte';
+    import { mapMeshMaterials } from './MapMeshMaterial';
+    import { onDestroy } from 'svelte';
+    import type { MapRuntime } from '../../doom';
+    import type { MapLighting } from './MapLighting';
+    import { monitorMapObject } from '../Map/SvelteBridge';
+    import { useDoomMap } from '../Map/Context.svelte';
+
+    export let map: MapRuntime;
+    export let lighting: MapLighting;
+
+    const threlte = useThrelte();
+
+    const { editor, settings } = useAppContext();
+    const { fakeContrast, playerLight, useTextures } = settings;
+    const { renderSectors, dataCache } = useDoomMap();
+    const { tick } = map.game.time;
+
+    console.time('map-geo')
+    if (import.meta.hot) {
+        import.meta.hot.acceptExports('MapGeometry',m => {
+            dataCache.remove('textureAtlas');
+            dataCache.remove('mapGeometry');
+        });
+    }
+    const ta = dataCache.fetch('textureAtlas', () => new MapTextureAtlas(map.game.wad, new TextureAtlas(threlte.renderer.capabilities.maxTextureSize)));
+    const { geometry, skyGeometry, translucentGeometry } = dataCache.fetch('mapGeometry',
+        () => buildMapGeometry(ta, map, renderSectors),
+        geom => geom.dispose());
+    console.timeEnd('map-geo')
+
+    const { material, distanceMaterial, depthMaterial, uniforms } = mapMeshMaterials(ta, lighting);
+    const tranMaterial = mapMeshMaterials(ta, lighting);
+    const tranUniforms = tranMaterial.uniforms;
+    tranMaterial.material.transparent = true;
+    tranMaterial.material.opacity = 0.8;
+    tranMaterial.material.alphaTest = 0;
+    // based on https://discourse.threejs.org/t/does-anyone-know-how-the-depth-pre-pass-option-of-babylonjs-is-implemented/20623/11
+    tranMaterial.depthMaterial.colorWrite = false;
+    tranMaterial.depthMaterial.depthWrite = true;
+    tranMaterial.depthMaterial.transparent = true;
+    const skyMaterial = new MeshBasicMaterial({ depthWrite: true, colorWrite: false });
+    const interpolateMovement = settings.interpolateMovement;
+
+    // set material properties
+    function updateMaterialTexture(useTextures: boolean) {
+        tranMaterial.material.map =
+            material.map = useTextures ? ta.texture : null;
+        tranMaterial.material.needsUpdate =
+            material.needsUpdate = true;
+    }
+    $: updateMaterialTexture($useTextures);
+
+    const updateFakeContrast = (fakeContrast: string) =>
+        $tranUniforms.doomFakeContrast.value =
+        $uniforms.doomFakeContrast.value =
+            fakeContrast === 'off' ? 0 :
+            fakeContrast === 'classic' ? 1 :
+            2;
+    $: updateFakeContrast($fakeContrast);
+
+    const updateTime = (tic: number) =>
+        $tranUniforms.tic.value = $uniforms.tic.value = tic;
+    $: updateTime($interpolateMovement ? $tick : Math.floor($tick) + .9999999999999);
+
+    const updateExtraLight = (extraLight: number) =>
+        $tranUniforms.doomExtraLight.value =
+        $uniforms.doomExtraLight.value = extraLight;
+    $: updateExtraLight($extraLight / 255);
+
+    function updateInspectors(edit: typeof $editor) {
+        // map objects have 'health' so ignore those
+        $tranUniforms.dInspect.value =
+        $uniforms.dInspect.value =
+        edit.selected && !('health' in edit.selected)
+            ? [
+                'special' in edit.selected ? 0 : 1,
+                edit.selected.num,
+            ]
+            // clear selection
+            : [-1, -1];
+    }
+    $: updateInspectors($editor);
+
+    // magic https://stackoverflow.com/questions/49873459
+    // it probably depends on light distance, intensity, and decay
+    const shadowBias = -0.0004;
+
+    $: usePlayerLight = $playerLight !== '#000000';
+    $: receiveShadow = usePlayerLight;
+    $: castShadow = receiveShadow;
+    let { position: playerPosition, extraLight } = map.player;
+
+    onDestroy(monitorMapObject(map, map.player, mo => {
+        playerPosition = mo.position;
+    }));
+
+    const hit = (geom: BufferGeometry) => (ev) => {
+        if (!ev.face) {
+            return;
+        }
+        ev.stopPropagation();
+
+        // Also tran?
+        const type = geom.attributes.doomInspect.array[ev.face.a * 2];
+        const items = type === 0 ? map.data.linedefs : map.data.sectors;
+        const num = geom.attributes.doomInspect.array[ev.face.a * 2 + 1];
+        $editor.selected = items.find(e => e.num === num);
+    }
+</script>
+
+<T.Mesh
+    renderOrder={0}
+    geometry={skyGeometry}
+    material={skyMaterial}
+>
+    <Wireframe />
+</T.Mesh>
+
+<T.Mesh
+    onclick={hit(geometry)}
+    renderOrder={1}
+    {geometry}
+    {material}
+    customDepthMaterial={depthMaterial}
+    customDistanceMaterial={distanceMaterial}
+    {receiveShadow}
+    {castShadow}
+>
+    <Wireframe />
+</T.Mesh>
+
+<T.Mesh
+    onclick={hit(translucentGeometry)}
+    renderOrder={1}
+    geometry={translucentGeometry}
+    material={tranMaterial.material}
+    customDepthMaterial={tranMaterial.depthMaterial}
+    customDistanceMaterial={tranMaterial.distanceMaterial}
+    {receiveShadow}
+    {castShadow}
+>
+    <Wireframe />
+</T.Mesh>
+
+{#if usePlayerLight}
+    <T.PointLight
+        {castShadow}
+        color={$playerLight}
+        intensity={10}
+        distance={400}
+        decay={0.2}
+        position.x={playerPosition.x}
+        position.y={playerPosition.y}
+        position.z={playerPosition.z + 40}
+        shadow.bias={shadowBias}
+    />
+{/if}

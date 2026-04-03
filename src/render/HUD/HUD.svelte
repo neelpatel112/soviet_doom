@@ -1,0 +1,269 @@
+<script lang="ts">
+    import { type PlayerMapObject } from "../../doom";
+    import Picture, { imageDataUrl } from "../Components/Picture.svelte";
+    import Face from "./Face.svelte";
+    import KeyCard from "./KeyCard.svelte";
+    import HUDMessages from "./HUDMessages.svelte";
+    import STNumber from "../Components/STNumber.svelte";
+    import { useAppContext, useDoom } from "../DoomContext";
+
+    export let player: PlayerMapObject;
+    const { maxHudScale, hudStyle, extendedHud } = useAppContext().settings;
+    const { viewSize } = useDoom();
+
+    const yScale = (16 / 10) / (4 / 3);
+    const { weapon, inventory } = player;
+    $: weaponLights = $inventory.weapons.map(e => e?.keynum);
+    const background = imageDataUrl(player.map.game.wad, 'STBAR', 'any');
+    const gfx = player.map.game.wad.graphic('STBAR');
+    const offsetX = (320 - gfx.width) / 2;
+    $: scale = Math.min($viewSize.width / 320, $viewSize.height / gfx.height, $maxHudScale);
+    $: hudHeight = gfx.height * scale;
+    $: hudTopOffset = $hudStyle !== 'top' ? '0px' :
+        `calc(${hudHeight}px + 1rem + ${$extendedHud ? '2rem' : '0px'})`;
+
+    let timeText = formatTime(0);
+    const tick = player.map.game.time.tick;
+    $: if ($extendedHud && $tick) {
+        timeText = formatTime(player.map.game.time.elapsed);
+    }
+    function formatTime(dt: number) {
+        dt = Math.max(0, dt);
+        let hours = String(Math.floor(dt / 3600) % 24).padStart(2, '0');
+        let minutes = String(Math.floor(dt / 60) % 60).padStart(2, '0');
+        let seconds = String(Math.floor(dt % 60)).padStart(2, '0');
+        let ms = String(Math.floor(dt * 1000) % 1000).padStart(3, '0');
+        return hours + ':' + minutes + ':' + seconds + '.' + ms;
+    }
+
+    let killCount = 0;
+    let itemCount = 0;
+    let secretCount = 0;
+    const tickN = player.map.game.time.tickN;
+    $: if ($extendedHud && $tickN) {
+        killCount = player.stats.kills;
+        itemCount = player.stats.items;
+        secretCount = player.stats.secrets;
+    }
+
+    let health = 0;
+    $: if ($tickN) {
+        health = player.health;
+    }
+</script>
+
+<HUDMessages {scale} topOffset={hudTopOffset} {player} />
+
+<div
+    class="hud" style="{$hudStyle}:0px; transform-origin: {$hudStyle} center;"
+    style:--st-bg="url({background})"
+    style:--st-bg-offsetx="{offsetX}px"
+    style:--st-scale="{scale}, {yScale * scale}"
+>
+    {#if $extendedHud}
+        <div
+            style:--stat-block-top={$hudStyle === 'bottom' ? "-.8rem" : "2rem"}
+            style:--stat-block-flex-direction={$hudStyle === 'bottom' ? "column" : "column-reverse"}
+            class="stat-block"
+        >
+            <span class="stat-time">{timeText}</span>
+            <span class="flex gap-2">
+                K <span class="stat-counter" class:stat-complete={killCount === player.map.stats.totalKills}>{killCount}/{player.map.stats.totalKills}</span>
+                I <span class="stat-counter" class:stat-complete={killCount === player.map.stats.totalItems}>{itemCount}/{player.map.stats.totalItems}</span>
+                S <span class="stat-counter" class:stat-complete={killCount === player.map.stats.totalSecrets}>{secretCount}/{player.map.stats.totalSecrets}</span>
+            </span>
+        </div>
+    {/if}
+    <!-- <Picture name={'STBAR'} /> -->
+    <div class="ammo">
+        {#if $inventory.ammo[$weapon.ammoType]}
+            <STNumber sprite='STTNUM' value={$inventory.ammo[$weapon.ammoType].amount} />
+        {/if}
+    </div>
+    <div class="health">
+        <STNumber sprite='STTNUM' value={health} percent />
+    </div>
+    <div class="arms">
+        <Picture name={'STARMS'} type='sprite' />
+        <span><STNumber sprite={weaponLights.includes(2) ? 'STYSNUM' : 'STGNUM'} value={2} /></span>
+        <span><STNumber sprite={weaponLights.includes(3) ? 'STYSNUM' : 'STGNUM'} value={3} /></span>
+        <span><STNumber sprite={weaponLights.includes(4) ? 'STYSNUM' : 'STGNUM'} value={4} /></span>
+        <span><STNumber sprite={weaponLights.includes(5) ? 'STYSNUM' : 'STGNUM'} value={5} /></span>
+        <span><STNumber sprite={weaponLights.includes(6) ? 'STYSNUM' : 'STGNUM'} value={6} /></span>
+        <span><STNumber sprite={weaponLights.includes(7) ? 'STYSNUM' : 'STGNUM'} value={7} /></span>
+    </div>
+    <div class="face">
+        <Face {player} {health} />
+    </div>
+    <div class="armor">
+        <STNumber sprite='STTNUM' value={$inventory.armor} percent />
+    </div>
+    <div class="keys">
+        {#if $inventory.keys.includes('B') || $inventory.keys.includes('b')}
+            <span><KeyCard keys={$inventory.keys} key={'B'} /></span>
+        {/if}
+        {#if  $inventory.keys.includes('Y') || $inventory.keys.includes('y')}
+            <span><KeyCard keys={$inventory.keys} key={'Y'} /></span>
+        {/if}
+        {#if  $inventory.keys.includes('R') || $inventory.keys.includes('r')}
+            <span><KeyCard keys={$inventory.keys} key={'R'} /></span>
+        {/if}
+    </div>
+    <div class="backpack">
+        <span>
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.bullets.amount} />
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.bullets.max} />
+        </span>
+        <span>
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.shells.amount} />
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.shells.max} />
+        </span>
+        <span>
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.rockets.amount} />
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.rockets.max} />
+        </span>
+        <span>
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.cells.amount} />
+            <STNumber sprite='STYSNUM' value={$inventory.ammo.cells.max} />
+        </span>
+    </div>
+</div>
+
+<style>
+    .stat-block {
+        display: flex;
+        flex-direction: var(--stat-block-flex-direction);
+        top: var(--stat-block-top);
+        font-family: monospace;
+        font-size: .4rem;
+        line-height: .4rem;
+        color: #f60001;
+    }
+    .stat-time {
+        color: #78ff70;
+        filter: drop-shadow(.5px .5px #0c1808);
+    }
+    .stat-counter {
+        color: #ffff75;
+        filter: drop-shadow(.5px .5px #742d01);
+    }
+    .stat-complete {
+        color: #ababff;
+        filter: drop-shadow(.5px .5px #01019b);
+    }
+
+    div {
+        position: absolute;
+        display: inline-block;
+        line-height: 0;
+    }
+
+    .hud {
+        user-select: none;
+        width: 320px;
+        height: 32px;
+        transform: scale(var(--st-scale));
+        background: var(--st-bg);
+        background-position: var(--st-bg-offsetx) 0px;
+        image-rendering: pixelated;
+    }
+
+    .ammo {
+        left: 3px;
+        top: 3px;
+    }
+
+    .health {
+        left: 48px;
+        top: 3px;
+    }
+
+    .arms {
+        display: inline-flex;
+        flex-direction: row;
+        left: 104px;
+        top: 0px;
+    }
+    .arms span {
+        position: absolute;
+    }
+    .arms span:nth-child(2) {
+        top: 4px;
+        left: -1px;
+    }
+    .arms span:nth-child(3) {
+        top: 4px;
+        left: 11px;
+    }
+    .arms span:nth-child(4) {
+        top: 4px;
+        left: 22.5px;
+    }
+    .arms span:nth-child(5) {
+        top: 14px;
+        left: -1px;
+    }
+    .arms span:nth-child(6) {
+        top: 14px;
+        left: 11px;
+    }
+    .arms span:nth-child(7) {
+        top: 14px;
+        left: 22.5px;
+    }
+
+    .face {
+        left: 143px;
+    }
+
+    .armor {
+        left: 179px;
+        top: 3px;
+    }
+
+    .keys {
+        left: 239px;
+    }
+    .keys span {
+        width: 7px;
+        position: absolute;
+    }
+    .keys span:nth-child(1) {
+        top: 4px;
+    }
+    .keys span:nth-child(2) {
+        top: 14px;
+    }
+    .keys span:nth-child(3) {
+        top: 24px;
+    }
+
+    .backpack {
+        display: inline-flex;
+        flex-direction: column;
+        left: 250px;
+        top: 0px;
+    }
+    .backpack span {
+        position: absolute;
+        display: flex;
+        flex-direction: row;
+        gap: 12px;
+    }
+    .backpack span:nth-child(1) {
+        top: 5px;
+        left: 27px;
+    }
+    .backpack span:nth-child(2) {
+        top: 11px;
+        left: 27px;
+    }
+    .backpack span:nth-child(3) {
+        top: 17px;
+        left: 27px;
+    }
+    .backpack span:nth-child(4) {
+        top: 23px;
+        left: 27px;
+    }
+</style>

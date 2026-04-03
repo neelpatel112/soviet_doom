@@ -1,0 +1,770 @@
+<script lang="ts" context="module">
+    interface RecentlyUsedGame {
+        wad: string;
+        map: string;
+        skill: number;
+        image: string;
+    }
+
+    const settingsKey = 'doom-lru-wads';
+    const recentlyUsedLimit = 12;
+    // nifty! https://stackoverflow.com/questions/34698905
+    const simplifyItem = (item: RecentlyUsedGame) => (({ image, ...o }) => o)(item);
+
+    export const recentlyUsedGames = (wads: WADInfo[]) => {
+        const wadImage = (wadNames: string) => {
+            const wadList = wadNames.split('&').map(e => e.split('=')[1]).flat();
+            return wadList.reverse().map(w => wads.find(e => e.name === w)).find(e => e && e.image)?.image ?? '';
+        };
+
+        let items: RecentlyUsedGame[] = [];
+        const push = (wad: string, map: string, skill: number) => {
+            items.splice(0, 0, { wad, map, skill, image: wadImage(wad) });
+            // remove any other entries for the same wad (assume we don't want multiple skill/maps on recently used)
+            for (let i = 1; i < items.length; i++) {
+                if (items[i].wad === wad) {
+                    items.splice(i, 1);
+                    i -= 1;
+                }
+            }
+            while (items.length > recentlyUsedLimit) {
+                items.pop();
+            }
+            localStorage.setItem(settingsKey, JSON.stringify(items.map(simplifyItem)));
+        }
+
+        try {
+            items = JSON.parse(localStorage.getItem(settingsKey)) ?? [];
+            // try to restore image
+            for (const item of items) {
+                item.image = wadImage(item.wad);
+            }
+        } catch {
+            console.warn('failed to restore recently used wads, using defaults');
+        }
+        return { push, items };
+    }
+</script>
+<script lang="ts">
+    import { crossfade, fade, fly } from "svelte/transition";
+    import { data, store, tickTime, type DoomWad } from "../doom";
+    import { WadStore, type WADInfo } from "../WadStore";
+    import Picture from "../render/Components/Picture.svelte";
+    import { Funnel, Home, MagnifyingGlass } from "@steeze-ui/heroicons";
+    import { Icon } from "@steeze-ui/svelte-icon";
+    import { useAppContext } from "../render/DoomContext";
+    import { createSoundBufferCache } from "../render/SoundPlayer.svelte";
+    import { onMount, tick } from "svelte";
+    import { menuSoundPlayer } from "../render/Menu/Menu.svelte";
+    import type { KeyboardEventHandler } from "svelte/elements";
+    import PreloadWad, { preloadedWads } from "./Launcher/PreloadWad.svelte";
+    import { SpeakerWave, SpeakerXMark } from "@steeze-ui/heroicons";
+    import WadList from './Launcher/WadList.svelte';
+    import { SaveGameStore, type SaveGame } from "../SaveGameStore.svelte";
+
+    export let wads: WADInfo[];
+    export let wadStore: WadStore;
+    export let wad: DoomWad = null;
+    $: iWads = wads.filter(wad => wad.iwad);
+    $: preloadWads = preloadedWads.filter(e => !iWads.find(w => w.name === e.link.split('/').pop().split('.').shift()))
+    $: pWads = wads.filter(wad => !wad.iwad);
+
+    const { audio, soundGain, settings, musicTrack, restoreGame } = useAppContext();
+    const { maxSoundChannels, muted } = settings;
+    $: menuSounds = menuSoundPlayer(audio, soundGain, wad ? createSoundBufferCache(audio, wad) : null);
+    $: msfx = menuSounds.sfx;
+    $: menuSounds.channelGain = (1 / 20 * Math.sqrt(Math.log($maxSoundChannels)));
+    $: recentlyUsed = recentlyUsedGames(wads);
+    $: $musicTrack = wad ? (wad.optionalLump('D_DM2TTL') ?? wad.optionalLump('D_INTRO')) : null;
+
+    const nullTransition = () => ({ duration: 0 });
+    const [send, receive] = crossfade({
+		duration: 350,
+		fallback: nullTransition,
+	});
+
+    let skullImage = 0;
+    const skullImages = ['M_SKULL1', 'M_SKULL2'];
+    onMount(() => {
+        // menu skull changes every 8 tics
+        const skullChanger = setInterval(() => skullImage ^= 1, 1000 * tickTime * 8);
+        return () => clearInterval(skullChanger);
+    });
+
+    let searchText = '';
+    $: lowerCaseSearchText = searchText.toLowerCase();
+    $: filteredWads = pWads.filter(wad => wad.name.includes(lowerCaseSearchText));
+
+    const formatPWADUrl = (wad: WADInfo, selected: string[], hash: string) => {
+        const params = new URLSearchParams(hash.substring(1));
+        if (selected.find(w => w === wad.name)) {
+            params.delete('wad', wad.name);
+        } else {
+            params.append('wad', wad.name);
+        }
+        return '#' + params.toString();
+    }
+    const toggleWad = (wad: WADInfo) => () =>
+        window.location.hash = formatPWADUrl(wad, selectedPWads, window.location.hash);
+
+    let selectedIWad: WADInfo;
+    let selectedPWads: string[] = [];
+    let bgImage = '';
+    let selectedWadName = '';
+    let lastPwadsCount = 0;
+    let lastIWad = '';
+    let startPlaying = false;
+    let mapName: string;
+    $: mapNames = wad?.mapNames ?? [];
+    function parseUrlHash(hash: string, iwads: WADInfo[]) {
+        const params = new URLSearchParams(hash.substring(1));
+
+        const wads = params.getAll('wad');
+        selectedIWad = iwads.find(e => e.name === wads[0]);
+        selectedWadName = selectedIWad?.name ?? selectedWadName;
+        const pwads = wads.map(p => pWads.find(e => e.name === p)).filter(e => e);
+        bgImage = pwads.reduce<string>((last, pwad) => pwad?.image?.length ? pwad.image : last, undefined) ?? selectedIWad?.image;
+        selectedPWads = pwads.map(e => e.name);
+
+        if (selectedIWad?.name !== lastIWad) {
+            (lastIWad ? msfx.swtchx : msfx.pistol)();
+        }
+        if (lastPwadsCount !== selectedPWads.length) {
+            (lastPwadsCount - selectedPWads.length > 0 ? msfx.swtchx : msfx.swtchn)();
+        }
+        lastIWad = selectedIWad?.name ?? '';
+        lastPwadsCount = selectedPWads.length;
+
+        const urlMapName = params.get('map');
+        if (urlMapName !== mapName) {
+            mapName = urlMapName;
+        }
+
+        let wasPlaying = startPlaying;
+        startPlaying = params.has('play') || params.has('map');
+        if (wasPlaying !== startPlaying) {
+            (wasPlaying ? msfx.swtchx : msfx.pistol)();
+        }
+    }
+    $: parseUrlHash(window.location.hash, iWads);
+
+    // save games
+    const sgs = new SaveGameStore(restoreGame);
+    let selectedFilters = [];
+    let lastFilters: string[] = [];
+    const skipFilters = [/^MAP$/, /^MAP\d\d$/, /^E\dM\d$/, /^E\d$/, /^M\d$/];
+    $: sgs.filters.then(f => f.filter(e => !skipFilters.some(re => re.test(e[0])) && e[0].length > 1).map(e => e[0]))
+        .then(f => lastFilters = f);
+    let lastSaves: SaveGame[] = [];
+    $: saveGames = sgs.loadGames(sgs.rev && selectedFilters).then(sg => lastSaves = sg);
+    const toggleGameFilter = (name: string) => () => {
+        if (selectedFilters.includes(name)) {
+            selectedFilters = selectedFilters.filter(e => e !== name);
+        } else {
+            selectedFilters = [...selectedFilters, name];
+        }
+    }
+
+    $: screen =
+        wad && startPlaying && mapNames.includes('E1M1') && !mapName ? 'select-episode' :
+        wad && startPlaying ? 'select-skill' :
+        wad ? 'select-wads' :
+        !selectedIWad ? 'select-iwad' :
+        'wait'; // a brief intermediate state that happens when an iwad is selected but the wad isn't loaded (yet)
+
+    // keyboard controls became almost an exercise in code golf so I'm not sure how readable this is...
+    let rootNode: HTMLDivElement;
+    let cursor = store(0);
+    let section = store('');
+    const keyboardControllers = (() => {
+        type MoverInfo = { rows: number, cols: number, cells: number, buttons: NodeListOf<HTMLElement> };
+        const gridMeasure = (selector: string, buttonSelector = '.btn') => (info: MoverInfo) => {
+            const grid = rootNode?.querySelector<HTMLElement>(selector);
+            if (grid) {
+                info.cells = grid.childElementCount;
+                info.buttons = grid.querySelectorAll(buttonSelector);
+                // Based on https://stackoverflow.com/questions/49506393
+                const style = getComputedStyle(grid);
+                info.rows = style.gridTemplateRows.split(' ').length;
+                info.cols = style.gridTemplateColumns.split(' ').length;
+            }
+        };
+        const flexMeasure = (selector: string, buttonSelector = '.btn') => (info: MoverInfo) => {
+            const root = rootNode?.querySelector<HTMLElement>(selector);
+            if (root) {
+                info.cells = root.childElementCount;
+                info.buttons = root.querySelectorAll(buttonSelector);
+                // Based on https://stackoverflow.com/questions/49506393
+                const style = getComputedStyle(root);
+                info.rows = style.flexDirection.startsWith('column') ? info.cells : 1;
+                info.cols = style.flexDirection.startsWith('row') ? info.cells : 1;
+            }
+        };
+
+        const mover = (name: string, measureElement: (info: MoverInfo) => void) => {
+            const info = { rows: 0, cols: 0, cells: 0, buttons: null as NodeListOf<HTMLElement> };
+            const measure = () => measureElement(info);
+            const monitor = () => {
+                const obs = new ResizeObserver(measure);
+                obs.observe(rootNode);
+                return () => obs.disconnect();
+            };
+            const move = (ev: KeyboardEvent) => {
+                const min = Math.floor(cursor.val / info.cols) * info.cols;
+                const max = Math.min(info.cells, min + info.cols);
+                // clamp instead of wrap?
+                if (ev.code === 'ArrowUp') {
+                    cursor.update(n => wrapAround(n - info.cols, info.cells));
+                } else if (ev.code === 'ArrowDown') {
+                    cursor.update(n => wrapAround(n + info.cols, info.cells));
+                } else if (ev.code === 'ArrowLeft') {
+                    cursor.update(n => wrapAround(n - 1, max, min));
+                } else if (ev.code === 'ArrowRight') {
+                    cursor.update(n => wrapAround(n + 1, max, min));
+                } else if (ev.code === 'Enter' || ev.code === 'Return' || ev.code === 'Space') {
+                    info.buttons.item(cursor.val).click();
+                    ev.preventDefault();
+                }
+            };
+            return { name, info, move, monitor, measure };
+        };
+
+        let resetCursor = () => {};
+        let resetState: any = () => {};
+        const captureCursor = (n: number, fn: KeyboardEventHandler<Window>, init = resetState) => {
+            let localCursor = n;
+            return () => {
+                resetState();
+                tick().then(() => resetState = init() ?? resetState);
+                resetCursor();
+                cursor.set(localCursor);
+                resetCursor = cursor.subscribe(n => localCursor = n);
+                return fn;
+            }
+        };
+        const wrapAround = (n: number, max: number, min = 0) => n > max - 1 ? min : n < min ? max - 1 : n;
+
+        const episodeGrid = mover('episode', gridMeasure('.card-actions .grid'));
+        const episode = captureCursor(0, ev => {
+            episodeGrid.move(ev);
+            if (ev.code === 'Escape') {
+                rootNode.querySelector<HTMLElement>('.card-title a').click();
+            }
+        }, episodeGrid.monitor);
+
+        const root = (): KeyboardEventHandler<Window> => {
+            if (!recentlyUsed.items.length) {
+                section.set('game');
+                const gameGrid = mover('game', gridMeasure('.game-grid'));
+                return captureCursor(0, gameGrid.move, gameGrid.monitor)();
+            }
+
+            const stackedGrid =
+                (before: ReturnType<typeof mover>, main: ReturnType<typeof mover>, after: ReturnType<typeof mover>) =>
+                (): KeyboardEventHandler<Window> => {
+                    resetState();
+                    resetState = main.monitor();
+                    return ev => {
+                        if (ev.code === 'ArrowUp') {
+                            if (cursor.val - main.info.cols < 0) {
+                                before.measure();
+                                cursor.update(v => before.info.cols * (before.info.rows - 1) + (v % before.info.cols));
+                                return section.set(before.name);
+                            }
+                            cursor.update(n => wrapAround(n - main.info.cols, main.info.cells));
+                        } else if (ev.code === 'ArrowDown') {
+                            if (cursor.val + main.info.cols >= main.info.cells) {
+                                after.measure();
+                                cursor.update(v => v % after.info.cols);
+                                return section.set(after.name);
+                            }
+                            cursor.update(n => wrapAround(n + main.info.cols, main.info.cells));
+                        } else {
+                            main.move(ev);
+                        }
+                        const element = main.info.buttons.item($cursor);
+                        element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    };
+                };
+
+            const saveFiltersMover = mover('save-filters', flexMeasure('.save-filters', '.label'));
+            const saveGameGrid = mover('saves', gridMeasure('.load-save-grid'));
+            const recentGrid = mover('recent', gridMeasure('.recent-grid'));
+            const gameGrid = mover('game', gridMeasure('.game-grid'));
+            const saveFiltersHandler = stackedGrid(gameGrid, saveFiltersMover, saveGameGrid);
+            const saveGridHandler = stackedGrid(saveFiltersMover, saveGameGrid, recentGrid);
+            const recentGridHandler = stackedGrid(saveGameGrid, recentGrid, gameGrid);
+            const gameGridHandler = stackedGrid(recentGrid, gameGrid, saveGameGrid);
+            let currentHandler: KeyboardEventHandler<Window>;
+            if (!section.val.length) {
+                section.set('recent');
+            }
+            section.subscribe(val => currentHandler =
+                val === 'save-filters' ? saveFiltersHandler() :
+                val === 'game' ? gameGridHandler() :
+                val === 'saves' ? saveGridHandler() :
+                recentGridHandler());
+            return ev => currentHandler(ev);
+        };
+
+        const skill = captureCursor(3, ev => {
+            if (ev.code === 'ArrowUp') {
+                cursor.update(n => wrapAround(n - 1, data.skills.length));
+            } else if (ev.code === 'ArrowDown') {
+                cursor.update(n => wrapAround(n + 1, data.skills.length));
+            } else if (ev.code === 'Enter' || ev.code === 'Return' || ev.code === 'Space') {
+                rootNode.querySelector<HTMLElement>('.card-actions .pulse-saturation').click();
+                ev.preventDefault();
+            } else if (ev.code === 'Escape') {
+                rootNode.querySelector<HTMLElement>('.card-title a:last-child').click();
+            }
+        });
+
+        const wads = (): KeyboardEventHandler<Window> => {
+            const scrollTo = () => {
+                const element = rootNode.querySelectorAll<HTMLElement>('.dropdown ul button').item(cursor.val);
+                element?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            const wadListController = captureCursor(-1, ev => {
+                if (ev.code === 'Enter' || ev.code === 'Return' || ev.code === 'Space') {
+                    cursor.update(y => wrapAround(y, filteredWads.length));
+                    rootNode.querySelectorAll<HTMLElement>('.dropdown ul button').item(cursor.val).click();
+                    rootNode.querySelector<HTMLElement>('.dropdown input').focus();
+                    ev.preventDefault();
+                } else if (ev.code === 'Delete') {
+                    rootNode.querySelector<HTMLElement>('.dropdown .clear-selection').click();
+                } else if (ev.code === 'Escape' || ev.code === 'ArrowLeft' || ev.code === 'ArrowRight') {
+                    rootNode.querySelector<HTMLElement>('.card-actions .btn').focus();
+                    searchText = '';
+                    msfx.swtchx();
+                } else if (ev.code === 'ArrowDown') {
+                    cursor.update(n => wrapAround(n + 1, filteredWads.length));
+                    scrollTo();
+                } else if (ev.code === 'ArrowUp') {
+                    cursor.update(n => wrapAround(n - 1, filteredWads.length));
+                    scrollTo();
+                }
+            })();
+            const wadScreenController = captureCursor(0, ev => {
+                if (ev.code === 'Enter' || ev.code === 'Return' || ev.code === 'Space') {
+                    rootNode.querySelector<HTMLElement>('.card-actions .btn').click();
+                } else if (ev.code === 'Escape') {
+                    rootNode.querySelector<HTMLElement>('nav .btn').click();
+                } else if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight') {
+                    msfx.swtchn();
+                    cursor.set(0);
+                    rootNode.querySelector<HTMLElement>('.dropdown .btn')?.focus();
+                    rootNode.querySelector<HTMLElement>('.dropdown input')?.focus();
+                }
+            })();
+            return ev => {
+                // this is probably a little expensive but since the visibility can be cancelled by mixing mouse and
+                // keyboard interaction, it's the only safe way I can think of doing this
+                const dropdownELement = rootNode.querySelector<HTMLElement>('.dropdown .dropdown-content');
+                const listVisible = dropdownELement && getComputedStyle(dropdownELement).visibility === 'visible';
+                return (listVisible ? wadListController : wadScreenController)(ev);
+            };
+        };
+
+        return { episode, skill, wads, root };
+    })();
+    const cursorSection = (section: string, num: number) => () => {
+        $section = section;
+        $cursor = num;
+    };
+    $: if ($cursor >= 0) msfx.pstop();
+    $: keyController = rootNode && (
+        screen === 'select-episode' ? keyboardControllers.episode() :
+        screen === 'select-skill' ? keyboardControllers.skill() :
+        screen === 'select-wads' ? keyboardControllers.wads() :
+        screen === 'select-iwad' ? keyboardControllers.root() :
+        null);
+
+    let keyboardActive = false;
+    const keydown: KeyboardEventHandler<Window> = ev => {
+        keyboardActive = true;
+        keyController?.(ev);
+    }
+</script>
+
+<svelte:window
+    on:popstate={() => parseUrlHash(window.location.hash, iWads)}
+    on:keydown={keydown}
+    on:pointermove={() => keyboardActive = false}
+/>
+
+<div bind:this={rootNode}
+    class="launcher-screen px-4 py-2 pb-24 sm:px-8 mx-auto"
+    class:keyboard-controls={keyboardActive}
+>
+    {#if lastFilters.length}
+        <div class="divider">Quick Load</div>
+        <div class="quick-load-controls
+            flex gap-2 items-center justify-start
+            shadow-2xl bg-base-100 rounded-2xl py-2 px-4
+            max-w-[calc(100vw-2rem)] sm:max-w-[min(86.5rem,calc(100vw-4rem))]
+        ">
+            <a href="#tab=save-games" class="btn">Manage Saves</a>
+            <span><Icon src={Funnel} theme='outline' size="24px" /></span>
+            <ul class="save-filters menu menu-horizontal flex-nowrap overflow-x-scroll">
+                {#each lastFilters as filter, i}
+                    {@const checked = selectedFilters.includes(filter)}
+                    <li>
+                        <label
+                            class="label cursor-pointer gap-1"
+                            class:active={i === $cursor && 'save-filters' === $section}
+                            on:pointerenter={cursorSection('save-filters', i)}
+                        >
+                            <input type="checkbox" class="checkbox checkbox-xs no-animation" {checked}
+                                on:change={toggleGameFilter(filter)} />
+                            <span class="label-text text-sm lowercase">{filter}</span>
+                        </label>
+                    </li>
+                {/each}
+            </ul>
+        </div>
+
+        <div class="load-save-grid
+            relative pt-4
+            grid grid-cols-2 gap-4 place-content-start
+            md:grid-cols-3 lg:grid-cols-4 sm:gap-8"
+        >
+        {#await saveGames}
+            <div class="absolute inset-0 flex justify-center items-center z-20" out:fade={{ duration: 400 }}>
+                <span class="loading loading-spinner loading-lg"></span>
+            </div>
+        {:then sg}
+            {#if !sg.length}
+                No save games matching filter: "{selectedFilters.join(' ').toLocaleLowerCase()}"
+            {/if}
+        {/await}
+        {#each lastSaves.slice(0, 8) as save, i}
+            <a
+                class="btn w-full h-auto no-animation p-0 overflow-hidden shadow-2xl relative"
+                href={save.launchUrl}
+                on:click={save.restoreMap}
+                class:pulse-highlight={i === $cursor && 'saves' === $section}
+                class:btn-outline={i === $cursor && 'saves' === $section}
+                on:pointerenter={cursorSection('saves', i)}
+            >
+                <img width="320" height="200" src={save.image} alt={save.mapInfo.name} />
+
+                <div class="absolute bottom-2 right-2 p-2 items-end flex flex-col gap-2 bg-black rounded-lg text-secondary"
+                    style:--tw-bg-opacity={.5}
+                >
+                    <span>{save.mapInfo.totalKills === 0 ? '100' : Math.floor(save.mapInfo.kills * 100 / save.mapInfo.totalKills)}%</span>
+                    <div class="flex items-end">
+                        <span>{save.mapInfo.name}:</span>
+                        <span>{data.skills[save.skill - 1].alias}</span>
+                    </div>
+                    <div>
+                    {#each save.wads as name}
+                        <div class="badge badge-secondary badge-xs">{name}</div>
+                    {/each}
+                    </div>
+                </div>
+
+                {#if save.name.length}
+                <div class="absolute left-2 top-2 p-2 bg-black rounded-lg text-start text-primary text-sm max-w-60 overflow-hidden text-ellipsis"
+                    style:--tw-bg-opacity={.5}
+                >
+                    {save.name}
+                </div>
+                {/if}
+            </a>
+        {/each}
+        </div>
+    {/if}
+
+    {#if recentlyUsed.items.length}
+        <div class="divider">Recent Maps</div>
+        <div class="recent-grid
+            grid grid-cols-2 gap-4 place-content-start
+            md:grid-cols-3 lg:grid-cols-4 sm:gap-8"
+        >
+            {#each recentlyUsed.items as info, i (info.wad)}
+                {@const wadNames = info.wad.split('&').map(e => e .split('=')[1]).slice(1)}
+                <a
+                    class="btn h-auto no-animation p-0 overflow-hidden shadow-2xl relative"
+                    href="#{info.wad}&skill={info.skill}&map={info.map}"
+                    class:pulse-highlight={i === $cursor && 'recent' === $section}
+                    class:btn-outline={i === $cursor && 'recent' === $section}
+                    on:pointerenter={cursorSection('recent', i)}
+                >
+                    <img width="320" height="200" src={info.image} alt={info.wad} />
+
+                    <div class="absolute bottom-2 right-2 p-2 items-end flex flex-col gap-2 bg-black rounded-lg"
+                        style:--tw-bg-opacity={.5}
+                    >
+                        <div
+                            class="flex items-end text-secondary"
+                        >
+                            <span>{info.map}:</span>
+                            <span>{data.skills[info.skill - 1].alias}</span>
+                        </div>
+                        <div>
+                        {#each wadNames as name}
+                            <div class="badge badge-secondary badge-xs">{name}</div>
+                        {/each}
+                        </div>
+                    </div>
+                </a>
+            {/each}
+        </div>
+    {/if}
+    <div class="divider">New Game</div>
+    <div class="game-grid
+        grid grid-cols-2 gap-4 place-content-start
+        md:grid-cols-3 lg:grid-cols-4 sm:gap-8"
+    >
+        {#each iWads as iwad, i (iwad.name)}
+            {#if iwad !== selectedIWad}
+            <a
+                class="btn h-auto no-animation p-0 overflow-hidden shadow-2xl"
+                href="#wad={iwad.name}"
+                in:receive={{ key: iwad.name }}
+                out:send={{ key: iwad.name }}
+                class:pulse-highlight={i === $cursor && 'game' === $section}
+                class:btn-outline={i === $cursor && 'game' === $section}
+                on:pointerenter={cursorSection('game', i)}
+            >
+                <img width="320" height="200" src={iwad.image} alt={iwad.name} />
+            </a>
+            {/if}
+        {/each}
+        {#each preloadWads as wad, i (wad.link)}
+            {@const index = i + iWads.length}
+            <PreloadWad
+                {wadStore} {wad}
+                {...{
+                    class: [
+                        index === $cursor && 'game' === $section && 'pulse-highlight',
+                        index === $cursor && 'game' === $section && 'btn-outline',
+                    ],
+                    onpointerenter: cursorSection('game', index),
+                }}
+            >
+                <span class="download-required-annotation">Download</span>
+            </PreloadWad>
+        {/each}
+    </div>
+
+    {#if selectedIWad}
+        {#if screen !== 'select-iwad'}
+        <nav out:fly={{ y: '-100%' }} in:fly={{ delay: 600, y: '-100%' }} class="flex gap-2 absolute sm:top-2 sm:left-2 z-30">
+            <a class="btn btn-secondary w-48 shadow-xl" href={"#"}><Icon src={Home} theme='solid' size="16px"/> Home</a>
+            <label class="swap btn btn-secondary join-item">
+                <input type="checkbox" bind:checked={$muted} />
+                <Icon class="swap-on fill-current" src={SpeakerXMark} theme='solid' size="16px"/>
+                <Icon class="swap-off fill-current" src={SpeakerWave} theme='solid' size="16px"/>
+            </label>
+        </nav>
+        {/if}
+
+    <div
+        class="card image-full bg-base-200 shadow-xl absolute inset-0"
+        class:show-background={!Boolean(wad && startPlaying)}
+        in:receive={{ key: selectedWadName }}
+        out:send={{ key: selectedWadName }}
+    >
+        {#key bgImage}
+        <figure transition:fade>
+            <img class="flex-grow" style="image-rendering: pixelated;"
+                width="320" height="200"
+                src={bgImage} alt={'TITLEPIC'} />
+        </figure>
+        {/key}
+
+        {#if screen === 'select-wads'}
+            <div class="card-body justify-end">
+                <h2 class="card-title">
+                    <span>{selectedIWad.name}</span>
+                    {#if selectedPWads.length}
+                    <div class="divider sm:divider-horizontal">+</div>
+                    <div class="flex flex-wrap gap-2 p-4 bg-base-300 rounded-box place-items-center">
+                        {#each selectedPWads as pwad}
+                            <div class="badge badge-primary badge-lg">{pwad}</div>
+                        {/each}
+                    </div>
+                    {/if}
+                </h2>
+                <div class="card-actions">
+                    <div in:fly={{ delay: 200, y: '60%' }} class="flex flex-col sm:flex-row gap-2 w-full">
+                        <a
+                            class="btn btn-primary btn-lg flex-grow no-animation shadow-xl"
+                            href="#{wad.name}&play"
+                        >Play</a>
+                        {#if pWads.length}
+                        <div class="dropdown dropdown-top">
+                            <div tabindex="0" role="button" class="btn btn-lg min-w-80 shadow-xl">
+                                Mods (<a class="link link-primary" href="https://doomwiki.org/wiki/PWAD" target="_blank" rel="noreferrer" >PWADs</a>)
+                            </div>
+                            <div tabindex="-1"
+                                class="
+                                    dropdown-content h-96 overflow-scroll bg-base-300 shadow rounded-t-xl
+                                    absolute left-0 w-full
+                                    sm:w-screen sm:max-w-[150%] sm:-left-1/2
+                                "
+                                style:--wadlist-boxHeight=".5rem"
+                            >
+                                <div class="flex flex-wrap gap-1 items-center px-4 py-2 z-10 bg-base-100 sticky top-0 shadow-2xl">
+                                    <a class="clear-selection btn btn-sm" href="#wad={selectedWadName}">
+                                        Clear selection
+                                        {#if keyboardActive}
+                                            <kbd class="kbd kbd-xs uppercase">del</kbd>
+                                        {/if}
+                                    </a>
+                                    <label class="input input-bordered input-sm flex items-center gap-2 ms-auto">
+                                        <input type="text" class="grow" placeholder="Search" bind:value={searchText} />
+                                        <Icon src={MagnifyingGlass} theme='outline' size="8px" />
+                                    </label>
+                                </div>
+
+                                <WadList wads={filteredWads}>
+                                    {#snippet item(wad, i)}
+                                        {@const checked = selectedPWads.includes(wad.name)}
+                                        <button
+                                            on:click={toggleWad(wad)}
+                                            class={[
+                                                "px-6",
+                                                i === $cursor && 'active',
+                                                checked && 'border'
+                                            ]}
+                                            style:--tw-bg-opacity={.4}
+                                        >
+                                            {wad.name}
+                                            <span class="text-xs">[{wad.mapCount} map{wad.mapCount === 1 ? '' : 's'}{(wad.episodicMaps ? ' (episodic)' : '')}]</span>
+                                            <input type="checkbox" class="checkbox" {checked}  />
+                                        </button>
+                                    {/snippet}
+                                </WadList>
+                            </div>
+                        </div>
+                        {/if}
+                    </div>
+                </div>
+            </div>
+        {:else if screen === 'select-episode'}
+            <div class="card-body justify-self-center pt-24">
+                <div class="card-title h-40 grid justify-items-center items-center">
+                    <a href="#{wad.name}" class="scale-[2]"><Picture {wad} name="M_DOOM" /></a>
+                </div>
+                <div class="card-actions bg-base-300 rounded-box shadow-xl p-4 flex flex-col gap-2 z-10" style:--tw-bg-opacity={.7}>
+                    <span class="divider"><Picture {wad} name="M_EPISOD" /></span>
+                    <div class="grid sm:grid-cols-2 gap-4 mx-auto">
+                        {#each [1, 2, 3, 4, 5, 6, 7, 8, 9] as ep, i}
+                            {#if mapNames.includes(`E${ep}M1`)}
+                                <a class="btn no-animation h-full relative overflow-hidden" href="#{wad.name}&map=E{ep}M1"
+                                    class:pulse-highlight={i === $cursor}
+                                    class:btn-outline={i === $cursor}
+                                    on:pointerenter={() => $cursor = i}
+                                    on:click={msfx.pistol}
+                                >
+                                    <span class="scale-[1.1] hover:scale-[1.2] transition-transform">
+                                        <Picture {wad} name={ep > 3 ? 'INTERPIC' : `WIMAP${ep - 1}`} />
+                                    </span>
+                                    <span class="absolute bottom-0"><Picture {wad} name="M_EPI{ep}" /></span>
+                                </a>
+                            {/if}
+                        {/each}
+                    </div>
+                </div>
+            </div>
+        {:else if screen === 'select-skill'}
+            <div class="card-body justify-self-center pt-24">
+                <div
+                    class="card-title h-40 grid justify-items-center items-center"
+                    class:grid-cols-[1fr_auto_1fr]={mapName?.startsWith('E')}
+                >
+                    <a href="#{wad.name}" class="scale-[2]"><Picture {wad} name="M_DOOM" /></a>
+                    {#if mapName?.startsWith('E')}
+                        <div class="divider divider-horizontal"></div>
+                        {@const ep = parseInt(mapName[1])}
+                        <a class="btn h-full relative overflow-hidden" href="#{wad.name}&play"
+                            on:pointerenter={msfx.stnmov}
+                            on:click={msfx.swtchx}
+                        >
+                            <span class="scale-[1.2] hover:scale-[1.1] transition-transform">
+                                <Picture {wad} name={ep === 4 ? 'INTERPIC' : `WIMAP${ep - 1}`} />
+                            </span>
+                            <span class="absolute bottom-0"><Picture {wad} name="M_EPI{ep}" /></span>
+                        </a>
+                    {/if}
+                </div>
+
+                <div class="card-actions bg-base-300 rounded-box shadow-xl p-4 flex flex-col gap-2 z-10" style:--tw-bg-opacity={.7}>
+                    <span class="divider"><Picture {wad} name="M_SKILL" /></span>
+                    {#each data.skills as skill, i}
+                        <a class="btn w-full no-animation flex justify-start gap-4" in:fly={{ y: '-100%', delay: i * 50 }}
+                            href="#{wad.name}&skill={i + 1}&map={mapName ?? 'MAP01'}"
+                            class:bg-base-300={i === $cursor}
+                            on:pointerenter={() => $cursor = i}
+                            on:click={msfx.pistol}
+                        >
+                            <span class="scale-125 opacity-0 transition-opacity" class:opacity-100={i === $cursor}>
+                                <Picture {wad} name={skullImages[skullImage]} />
+                            </span>
+                            <span class:pulse-saturation={i === $cursor}>
+                                <Picture {wad} name={skill.pic} />
+                            </span>
+                        </a>
+                    {/each}
+                </div>
+            </div>
+        {/if}
+    </div>
+    {/if}
+</div>
+
+<style>
+    :global(body):has(.launcher-screen.keyboard-controls) {
+        cursor: none;
+    }
+    .keyboard-controls {
+        pointer-events: none;
+    }
+
+    .btn-outline img {
+        transform-origin: top center;
+        transition: transform 0.2s;
+    }
+    .btn-outline img {
+        transform: scale(1.05);
+    }
+
+    .download-required-annotation {
+        position: absolute;
+        top: 0;
+        background: black;
+        transition: transform .3s;
+    }
+    :global(.wad-install:hover .download-required-annotation) {
+        transform: translate(0, -150%);
+    }
+
+    /* .card.image-full > figure img {
+        object-fit: contain;
+    } */
+    .card.image-full:before {
+        transition: opacity .3s;
+    }
+    .card.image-full.show-background:before {
+        opacity: 0;
+    }
+
+    .pulse-saturation {
+        animation: pulse-saturate .4s infinite alternate-reverse;
+    }
+    @keyframes pulse-saturate {
+        0% { filter: saturate(1); }
+        100% { filter: saturate(1.5); }
+    }
+
+    .pulse-highlight {
+        animation: pulse-brightness .4s infinite alternate-reverse;
+    }
+    @keyframes pulse-brightness {
+        0% { filter: brightness(1); }
+        100% { filter: brightness(1.1); }
+    }
+</style>
